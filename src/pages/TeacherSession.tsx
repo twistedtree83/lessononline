@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { ClassCodeDisplay } from '../components/ClassCodeDisplay';
 import { LessonOutline } from '../components/LessonOutline';
 import { UnderstandingResults } from '../components/UnderstandingCheck';
-import { mockDatabase, User, Lesson, Session, Participant } from '../lib/supabase';
+import { mockDatabase, User, Lesson, Session, Participant, isMockDatabase } from '../lib/supabase';
 import { ArrowLeft, Users, X, HelpCircle, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { 
@@ -36,64 +36,75 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
     if (sessionId) {
       fetchSessionData(sessionId);
       
-      // Subscribe to Supabase Realtime channel
-      const channel = joinSession(sessionId, user.id, 'teacher');
-      
-      // Test if Supabase realtime is working
-      const testConnection = async () => {
-        try {
-          // Check if Supabase realtime is connected
-          const { error } = await supabase.from('sessions').select('id').limit(1);
-          if (!error) {
-            setRealtimeConnected(true);
-          }
-        } catch (error) {
-          console.error('Supabase connection error:', error);
-          setRealtimeConnected(false);
-        }
-      };
-      
-      testConnection();
-      
-      // Listen for participant joined events
-      const participantListener = supabase
-        .channel(`session-${sessionId}`)
-        .on('broadcast', { event: 'participant-joined' }, (payload) => {
-          const data = payload.payload as ParticipantJoined;
-          if (data.role === 'student') {
-            // Add the new participant
-            const newParticipant: Participant = {
-              id: `participant-${Date.now()}`,
-              session_id: sessionId,
-              user_id: data.userId,
-              joined_at: data.timestamp
-            };
+      // Subscribe to Supabase Realtime channel if not using mock database
+      if (!isMockDatabase) {
+        const channel = joinSession(sessionId, user.id, 'teacher');
+        
+        // Test if Supabase realtime is working
+        const testConnection = async () => {
+          try {
+            // Skip the test if we're using mock database
+            if (isMockDatabase) {
+              setRealtimeConnected(false);
+              return;
+            }
             
-            setParticipants(prev => {
-              // Check if this participant is already in the list
-              if (prev.some(p => p.user_id === data.userId)) {
-                return prev;
-              }
-              return [...prev, newParticipant];
-            });
-            
-            toast.success('A new student has joined the session');
+            // Check if Supabase realtime is connected
+            const { error } = await supabase.from('sessions').select('id').limit(1);
+            if (!error) {
+              setRealtimeConnected(true);
+            }
+          } catch (error) {
+            console.error('Supabase connection error:', error);
+            setRealtimeConnected(false);
           }
-        })
-        .on('broadcast', { event: 'understanding-update' }, (payload) => {
-          const data = payload.payload;
-          if (data.pollId === currentPollId) {
-            setPollResponses(prev => [...prev, data.response]);
+        };
+        
+        testConnection();
+        
+        // Listen for participant joined events
+        const participantListener = supabase
+          .channel(`session-${sessionId}`)
+          .on('broadcast', { event: 'participant-joined' }, (payload) => {
+            const data = payload.payload as ParticipantJoined;
+            if (data.role === 'student') {
+              // Add the new participant
+              const newParticipant: Participant = {
+                id: `participant-${Date.now()}`,
+                session_id: sessionId,
+                user_id: data.userId,
+                joined_at: data.timestamp
+              };
+              
+              setParticipants(prev => {
+                // Check if this participant is already in the list
+                if (prev.some(p => p.user_id === data.userId)) {
+                  return prev;
+                }
+                return [...prev, newParticipant];
+              });
+              
+              toast.success('A new student has joined the session');
+            }
+          })
+          .on('broadcast', { event: 'understanding-update' }, (payload) => {
+            const data = payload.payload;
+            if (data.pollId === currentPollId) {
+              setPollResponses(prev => [...prev, data.response]);
+            }
+          })
+          .subscribe();
+        
+        // Cleanup function
+        return () => {
+          if (participantListener) {
+            participantListener.unsubscribe();
           }
-        });
-      
-      // Cleanup function
-      return () => {
-        participantListener.unsubscribe();
-        if (sessionId) {
-          endSession(sessionId);
-        }
-      };
+          if (sessionId && !isMockDatabase) {
+            endSession(sessionId);
+          }
+        };
+      }
     }
   }, [sessionId, user.id, currentPollId]);
 
@@ -151,7 +162,9 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
       }
       
       // Notify all connected clients that the session has ended
-      endSession(sessionId);
+      if (!isMockDatabase) {
+        endSession(sessionId);
+      }
       
       setSession(updatedSession);
       toast.success('Session ended successfully');
@@ -222,7 +235,12 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
             <h1 className="text-2xl font-bold text-gray-900">{displayLesson.title}</h1>
           </div>
           <div className="flex items-center space-x-2">
-            {realtimeConnected ? (
+            {isMockDatabase ? (
+              <div className="flex items-center text-amber-600 mr-4">
+                <WifiOff className="h-4 w-4 mr-1" />
+                <span className="text-sm">Demo Mode</span>
+              </div>
+            ) : realtimeConnected ? (
               <div className="flex items-center text-green-600 mr-4">
                 <Wifi className="h-4 w-4 mr-1" />
                 <span className="text-sm">Connected</span>
@@ -248,7 +266,6 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
               <Button 
                 onClick={handleStartUnderstandingCheck}
                 className="bg-blue-600 hover:bg-blue-700"
-                disabled={!realtimeConnected}
               >
                 <HelpCircle className="h-4 w-4 mr-2" />
                 Check Understanding

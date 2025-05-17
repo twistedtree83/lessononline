@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { LessonOutline } from '../components/LessonOutline';
 import { UnderstandingCheck } from '../components/UnderstandingCheck';
-import { mockDatabase, User, Lesson, Session } from '../lib/supabase';
+import { mockDatabase, User, Lesson, Session, isMockDatabase } from '../lib/supabase';
 import { ArrowLeft, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { 
@@ -33,55 +33,72 @@ export default function StudentSession({ user }: StudentSessionProps) {
     if (sessionId) {
       fetchSessionData(sessionId);
       
-      // Subscribe to Supabase Realtime channel
-      const channel = joinSession(sessionId, user.id, 'student');
-      
-      // Test if Supabase realtime is working
-      const testConnection = async () => {
-        try {
-          // Check if Supabase realtime is connected
-          const { error } = await supabase.from('sessions').select('id').limit(1);
-          if (!error) {
-            setRealtimeConnected(true);
-            // Clear any polling interval if we're connected via Realtime
-            if (pollingInterval) {
-              clearInterval(pollingInterval);
-              setPollingInterval(null);
+      // Subscribe to Supabase Realtime channel if not using mock database
+      if (!isMockDatabase) {
+        const channel = joinSession(sessionId, user.id, 'student');
+        
+        // Test if Supabase realtime is working
+        const testConnection = async () => {
+          try {
+            // Skip the test if we're using mock database
+            if (isMockDatabase) {
+              setRealtimeConnected(false);
+              // Start polling as we know we're in mock mode
+              startPolling();
+              return;
             }
+            
+            // Check if Supabase realtime is connected
+            const { error } = await supabase.from('sessions').select('id').limit(1);
+            if (!error) {
+              setRealtimeConnected(true);
+              // Clear any polling interval if we're connected via Realtime
+              if (pollingInterval) {
+                clearInterval(pollingInterval);
+                setPollingInterval(null);
+              }
+            }
+          } catch (error) {
+            console.error('Supabase connection error:', error);
+            setRealtimeConnected(false);
+            // Start polling as a fallback when Realtime is disconnected
+            startPolling();
           }
-        } catch (error) {
-          console.error('Supabase connection error:', error);
-          setRealtimeConnected(false);
-          // Start polling as a fallback when Realtime is disconnected
-          startPolling();
-        }
-      };
-      
-      testConnection();
-      
-      // Listen for understanding check events
-      const understandingListener = supabase
-        .channel(`session-${sessionId}`)
-        .on('broadcast', { event: 'new-understanding-check' }, (payload) => {
-          const poll = payload.payload as UnderstandingPoll;
-          setCurrentPoll(poll);
-          setUserResponse(undefined);
-          toast.success('New understanding check from your teacher');
-        })
-        .on('broadcast', { event: 'session-ended' }, () => {
-          toast.info('This session has ended');
-          if (session) {
-            setSession({ ...session, active: false });
+        };
+        
+        testConnection();
+        
+        // Listen for understanding check events
+        const understandingListener = supabase
+          .channel(`session-${sessionId}`)
+          .on('broadcast', { event: 'new-understanding-check' }, (payload) => {
+            const poll = payload.payload as UnderstandingPoll;
+            setCurrentPoll(poll);
+            setUserResponse(undefined);
+            toast.success('New understanding check from your teacher');
+          })
+          .on('broadcast', { event: 'session-ended' }, () => {
+            toast.info('This session has ended');
+            if (session) {
+              setSession({ ...session, active: false });
+            }
+          })
+          .subscribe();
+        
+        // Cleanup function
+        return () => {
+          if (understandingListener) {
+            understandingListener.unsubscribe();
           }
-        });
-      
-      // Cleanup function
-      return () => {
-        understandingListener.unsubscribe();
-        if (pollingInterval) {
-          clearInterval(pollingInterval);
-        }
-      };
+          if (pollingInterval) {
+            clearInterval(pollingInterval);
+          }
+        };
+      } else {
+        // We're using mock database, so start polling
+        setRealtimeConnected(false);
+        startPolling();
+      }
     }
   }, [sessionId, user.id]);
 
@@ -243,7 +260,12 @@ export default function StudentSession({ user }: StudentSessionProps) {
             </div>
           </div>
           
-          {realtimeConnected ? (
+          {isMockDatabase ? (
+            <div className="flex items-center text-amber-600">
+              <WifiOff className="h-4 w-4 mr-1" />
+              <span className="text-sm">Demo Mode</span>
+            </div>
+          ) : realtimeConnected ? (
             <div className="flex items-center text-green-600">
               <Wifi className="h-4 w-4 mr-1" />
               <span className="text-sm">Connected</span>

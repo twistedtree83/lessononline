@@ -5,7 +5,8 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 // Check if we have valid credentials
-const hasValidCredentials = supabaseUrl !== '' && supabaseAnonKey !== '';
+const hasValidCredentials = supabaseUrl !== '' && supabaseAnonKey !== '' && 
+                            supabaseUrl !== 'https://example.supabase.co';
 
 // Initialize the Supabase client or create a mock version
 let supabase;
@@ -20,7 +21,8 @@ if (hasValidCredentials) {
     'Supabase client not initialized due to missing or invalid credentials. Using mock database instead.'
   );
   
-  // The client will be replaced by mockDatabase for local development
+  // Create a mock version of the Supabase client
+  // with implementations for commonly used methods
   supabase = {
     auth: {
       signInWithOtp: async () => ({ error: new Error('Supabase not initialized - using mock data') }),
@@ -36,10 +38,54 @@ if (hasValidCredentials) {
       select: () => ({ data: [], error: null }),
       update: () => ({ data: null, error: null }),
     }),
+    // Mock implementation of channel() for realtime features
+    channel: (channelName) => {
+      console.log(`Creating mock channel: ${channelName}`);
+      return {
+        on: (event, filter, callback) => {
+          console.log(`Mock channel subscribed to ${event}`, filter);
+          // Return self for chaining
+          return this;
+        },
+        subscribe: (callback) => {
+          console.log('Mock channel subscribed');
+          if (callback) callback();
+          return Promise.resolve();
+        },
+        unsubscribe: () => {
+          console.log('Mock channel unsubscribed');
+          return Promise.resolve();
+        },
+        // Return self for method chaining
+        on: () => {
+          return {
+            on: () => {
+              return {
+                subscribe: (callback) => {
+                  if (callback) callback();
+                  return Promise.resolve();
+                },
+                unsubscribe: () => {
+                  return Promise.resolve();
+                }
+              };
+            },
+            subscribe: (callback) => {
+              if (callback) callback();
+              return Promise.resolve();
+            },
+            unsubscribe: () => {
+              return Promise.resolve();
+            }
+          };
+        }
+      };
+    }
   };
 }
 
 export { supabase };
+export const isMockDatabase = !hasValidCredentials;
 
 export type User = {
   id: string;
