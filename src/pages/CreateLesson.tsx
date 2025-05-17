@@ -76,6 +76,19 @@ export default function CreateLesson({ user }: CreateLessonProps) {
       
       if (hasSupabaseConfig) {
         try {
+          // First check if Supabase connection is responsive with a simple query
+          const testResponse = await fetch(import.meta.env.VITE_SUPABASE_URL, { 
+            method: 'HEAD', 
+            headers: { 'Content-Type': 'application/json' },
+            // Set a reasonable timeout
+            signal: AbortSignal.timeout(5000) 
+          });
+          
+          if (!testResponse.ok) {
+            // If we can't reach Supabase, immediately fallback to mock
+            throw new Error('Cannot connect to Supabase');
+          }
+          
           // Try to save using Supabase
           const { data, error } = await supabase
             .from('lessons')
@@ -91,8 +104,11 @@ export default function CreateLesson({ user }: CreateLessonProps) {
           
           if (error) throw error;
           savedLesson = data;
+          
         } catch (supabaseError) {
           console.error('Supabase save error:', supabaseError);
+          toast.error('Could not connect to database server, using local storage instead');
+          
           // Fall back to mock database if Supabase fails
           console.log('Falling back to mock database');
           const result = mockDatabase.createLesson({
@@ -104,6 +120,7 @@ export default function CreateLesson({ user }: CreateLessonProps) {
         }
       } else {
         // Use mock database if no Supabase config
+        console.log('No Supabase configuration found, using mock database');
         const result = mockDatabase.createLesson({
           title,
           content: lessonContent,
@@ -115,7 +132,7 @@ export default function CreateLesson({ user }: CreateLessonProps) {
       toast.success('Lesson saved successfully!');
       navigate('/teacher');
     } catch (error) {
-      toast.error('Failed to save lesson');
+      toast.error('Failed to save lesson: ' + (error.message || 'Unknown error'));
       console.error('Error saving lesson:', error);
     } finally {
       setLoading(false);
