@@ -4,6 +4,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { StudentUnderstandingCheck } from '../components/UnderstandingCheck';
 import { mockDatabase, User, Lesson, Session, UnderstandingCheck } from '../lib/supabase';
+import { socketClient } from '../lib/socket';
 import { ArrowLeft, BookOpen } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -18,13 +19,47 @@ export default function StudentSession({ user }: StudentSessionProps) {
   const [loading, setLoading] = useState(true);
   const [activeCheck, setActiveCheck] = useState<UnderstandingCheck | null>(null);
   const [hasResponded, setHasResponded] = useState<boolean>(false);
+  const [realTimeAvailable, setRealTimeAvailable] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
     if (sessionId) {
       fetchSessionData(sessionId);
+      
+      // Connect to the socket server for real-time updates
+      try {
+        socketClient.joinSession(sessionId, user.id, 'student');
+        setRealTimeAvailable(true);
+        
+        // Set up listener for understanding checks
+        const checkHandler = (check: UnderstandingCheck) => {
+          setActiveCheck(check);
+          setHasResponded(false);
+          toast.success('New understanding check from your teacher');
+        };
+        
+        socketClient.on('understanding:check', checkHandler);
+        
+        return () => {
+          socketClient.off('understanding:check', checkHandler);
+        };
+      } catch (error) {
+        console.error('Failed to initialize real-time connection:', error);
+        setRealTimeAvailable(false);
+      }
     }
-  }, [sessionId]);
+  }, [sessionId, user.id]);
+
+  // Fallback polling method if socket connection isn't available
+  useEffect(() => {
+    if (!realTimeAvailable && sessionId) {
+      const checkForNewUnderstandingPolls = setInterval(() => {
+        checkForNewUnderstandingChecks(sessionId);
+      }, 5000);
+      
+      return () => clearInterval(checkForNewUnderstandingPolls);
+    }
+  }, [sessionId, activeCheck, realTimeAvailable]);
 
   const checkForNewUnderstandingChecks = async (sid: string) => {
     try {
@@ -50,17 +85,6 @@ export default function StudentSession({ user }: StudentSessionProps) {
       console.error('Error checking for understanding checks:', error);
     }
   };
-
-  // Poll for new understanding checks every 5 seconds
-  useEffect(() => {
-    if (!sessionId) return;
-    
-    const checkForNewUnderstandingPolls = setInterval(() => {
-      checkForNewUnderstandingChecks(sessionId);
-    }, 5000);
-    
-    return () => clearInterval(checkForNewUnderstandingPolls);
-  }, [sessionId, activeCheck]);
 
   const fetchSessionData = async (sid: string) => {
     try {
@@ -165,8 +189,14 @@ export default function StudentSession({ user }: StudentSessionProps) {
         return;
       }
       
-      // Submit the response
-      mockDatabase.respondToUnderstandingCheck(checkId, userParticipant.id, response);
+      // If real-time is available, use socket.io
+      if (realTimeAvailable) {
+        socketClient.sendUnderstandingResponse(checkId, response);
+      } else {
+        // Otherwise use mock database
+        mockDatabase.respondToUnderstandingCheck(checkId, userParticipant.id, response);
+      }
+      
       setHasResponded(true);
       toast.success('Response submitted');
     } catch (error) {
@@ -224,6 +254,13 @@ export default function StudentSession({ user }: StudentSessionProps) {
           </div>
         </div>
         
+        {!realTimeAvailable && (
+          <div className="bg-amber-50 border border-amber-200 p-3 rounded-md text-amber-800 text-sm mb-4">
+            <p className="font-medium">Real-time functionality limited</p>
+            <p>Using fallback mode for understanding checks.</p>
+          </div>
+        )}
+        
         {activeCheck && (
           <StudentUnderstandingCheck
             checkId={activeCheck.id}
@@ -244,6 +281,30 @@ export default function StudentSession({ user }: StudentSessionProps) {
             <p className="text-gray-700">{displayLesson.content.introduction.replace(/<\/?[^>]+(>|$)/g, "")}</p>
           </CardContent>
         </Card>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Main Content</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="prose max-w-none">
+                <div dangerouslySetInnerHTML={{ __html: displayLesson.content.body }} />
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card>
+            <CardHeader>
+              <CardTitle>Conclusion</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="prose max-w-none">
+                <div dangerouslySetInnerHTML={{ __html: displayLesson.content.conclusion }} />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
