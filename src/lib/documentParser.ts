@@ -4,9 +4,7 @@
 import * as pdfjs from 'pdfjs-dist';
 import * as mammoth from 'mammoth';
 
-// Configure PDF.js to use the worker file from the public directory
-// This ensures the worker is accessible at the root path
-pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
+// No need to set workerSrc, as we're now using workerPort via the shim
 
 /**
  * Extract text from a PDF file
