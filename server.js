@@ -1,14 +1,10 @@
 import express from 'express';
-import { createServer } from 'node:http';
+import http from 'node:http';
 import { Server } from 'socket.io';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import cors from 'cors';
 
 const app = express();
-const server = createServer(app);
+const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:5173",
@@ -16,127 +12,107 @@ const io = new Server(server, {
   }
 });
 
-// Store active sessions
-const sessions = new Map();
+app.use(cors());
+app.use(express.json());
 
-// Initialize a session when a teacher creates one
-function initSession(sessionId) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, {
-      participants: new Set(),
-      teacher: null,
-      currentCheck: null,
-      responses: new Map()
-    });
-    console.log(`Session initialized: ${sessionId}`);
-  }
-  return sessions.get(sessionId);
-}
+// Store active sessions and understanding polls
+const activeSessions = new Map();
+const understandingPolls = new Map();
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log('A user connected:', socket.id);
   
-  // Handle teacher joining a session
-  socket.on('teacher:join', ({ sessionId, teacherId }) => {
-    console.log(`Teacher ${teacherId} joined session ${sessionId}`);
-    
-    const session = initSession(sessionId);
-    session.teacher = socket.id;
-    
+  // Join a session room
+  socket.on('join-session', ({ sessionId, userId, role }) => {
     socket.join(sessionId);
-    socket.emit('session:joined', { role: 'teacher', sessionId });
+    console.log(`${role} ${userId} joined session ${sessionId}`);
+    
+    // If this is a teacher, initialize the session
+    if (role === 'teacher') {
+      activeSessions.set(sessionId, { teacherId: userId });
+      console.log(`Teacher initialized session ${sessionId}`);
+    }
+    
+    // Notify everyone in the room about the new participant
+    io.to(sessionId).emit('participant-joined', { 
+      userId, 
+      role,
+      timestamp: new Date().toISOString()
+    });
   });
   
-  // Handle student joining a session
-  socket.on('student:join', ({ sessionId, studentId }) => {
-    console.log(`Student ${studentId} joined session ${sessionId}`);
+  // Teacher starts an understanding check
+  socket.on('start-understanding-check', ({ sessionId, teacherId, question }) => {
+    console.log(`Teacher ${teacherId} started understanding check in session ${sessionId}`);
     
-    const session = initSession(sessionId);
-    session.participants.add(studentId);
+    // Create a new understanding poll
+    const pollId = `poll-${Date.now()}`;
+    understandingPolls.set(pollId, {
+      sessionId,
+      teacherId,
+      question: question || 'Do you understand?',
+      responses: [],
+      timestamp: new Date().toISOString()
+    });
     
-    socket.join(sessionId);
-    socket.emit('session:joined', { role: 'student', sessionId });
+    // Notify all students in the session
+    io.to(sessionId).emit('new-understanding-check', {
+      pollId,
+      question: question || 'Do you understand?',
+      timestamp: new Date().toISOString()
+    });
+  });
+  
+  // Student responds to understanding check
+  socket.on('understanding-response', ({ pollId, userId, understood }) => {
+    console.log(`Student ${userId} responded to poll ${pollId}: ${understood ? 'understood' : 'did not understand'}`);
     
-    // Notify teacher about the new student
-    if (session.teacher) {
-      io.to(session.teacher).emit('student:joined', { 
-        sessionId, 
-        studentId,
-        participantCount: session.participants.size
+    const poll = understandingPolls.get(pollId);
+    if (poll) {
+      // Add response
+      poll.responses.push({
+        userId,
+        understood,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Update the poll
+      understandingPolls.set(pollId, poll);
+      
+      // Notify the teacher
+      io.to(poll.sessionId).emit('understanding-update', {
+        pollId,
+        responses: poll.responses
       });
     }
-    
-    // Send current check if one is active
-    if (session.currentCheck) {
-      socket.emit('understanding:check', session.currentCheck);
-    }
   });
   
-  // Handle understanding check from teacher
-  socket.on('teacher:understanding-check', ({ sessionId, checkId, question }) => {
-    console.log(`Teacher sent understanding check in session ${sessionId}`);
+  // End session
+  socket.on('end-session', ({ sessionId }) => {
+    console.log(`Session ${sessionId} ended`);
+    io.to(sessionId).emit('session-ended');
+    activeSessions.delete(sessionId);
     
-    const session = initSession(sessionId);
-    session.currentCheck = { checkId, question, timestamp: new Date().toISOString() };
-    session.responses = new Map();
-    
-    // Broadcast to all students in the session
-    socket.to(sessionId).emit('understanding:check', session.currentCheck);
-    
-    // Return the current participants count as acknowledgment
-    return { participantCount: session.participants.size };
-  });
-  
-  // Handle understanding response from student
-  socket.on('student:understanding-response', ({ sessionId, checkId, studentId, response }) => {
-    console.log(`Student ${studentId} responded with ${response} to check ${checkId}`);
-    
-    const session = sessions.get(sessionId);
-    if (!session || session.currentCheck?.checkId !== checkId) {
-      return { error: 'Invalid session or check' };
-    }
-    
-    // Save the response
-    session.responses.set(studentId, response);
-    
-    // Calculate the stats
-    const understoodCount = Array.from(session.responses.values())
-      .filter(r => r === 'understood').length;
-    const notUnderstoodCount = Array.from(session.responses.values())
-      .filter(r => r === 'not-understood').length;
-    
-    const stats = {
-      checkId,
-      understood: understoodCount,
-      notUnderstood: notUnderstoodCount,
-      total: session.participants.size,
-      responded: session.responses.size
-    };
-    
-    // Notify the teacher
-    if (session.teacher) {
-      io.to(session.teacher).emit('understanding:stats', stats);
-    }
-    
-    return { success: true };
-  });
-  
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    
-    // Clean up any sessions where this socket was the teacher
-    for (const [sessionId, session] of sessions.entries()) {
-      if (session.teacher === socket.id) {
-        console.log(`Teacher left session ${sessionId}`);
-        session.teacher = null;
+    // Clean up any polls for this session
+    for (const [pollId, poll] of understandingPolls.entries()) {
+      if (poll.sessionId === sessionId) {
+        understandingPolls.delete(pollId);
       }
     }
   });
+  
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+  });
+});
+
+// Fallback route for checking server status
+app.get('/status', (req, res) => {
+  res.json({ status: 'Socket.io server is running' });
 });
 
 const PORT = process.env.PORT || 3001;
-
 server.listen(PORT, () => {
   console.log(`Socket.io server running on port ${PORT}`);
 });

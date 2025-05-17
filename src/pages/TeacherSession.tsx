@@ -4,11 +4,18 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { ClassCodeDisplay } from '../components/ClassCodeDisplay';
 import { LessonOutline } from '../components/LessonOutline';
-import { TeacherUnderstandingControl } from '../components/UnderstandingCheck';
-import { mockDatabase, User, Lesson, Session, Participant, UnderstandingCheck } from '../lib/supabase';
-import { socketClient } from '../lib/socket';
-import { ArrowLeft, Users, X } from 'lucide-react';
+import { UnderstandingResults } from '../components/UnderstandingCheck';
+import { mockDatabase, User, Lesson, Session, Participant } from '../lib/supabase';
+import { ArrowLeft, Users, X, HelpCircle, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { 
+  getSocket, 
+  joinSession, 
+  startUnderstandingCheck, 
+  endSession, 
+  UnderstandingResponse,
+  ParticipantJoined
+} from '../lib/socket';
 
 type TeacherSessionProps = {
   user: User;
@@ -20,90 +27,69 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
-  const [sendingCheck, setSendingCheck] = useState(false);
-  const [currentCheck, setCurrentCheck] = useState<UnderstandingCheck | null>(null);
-  const [checkStats, setCheckStats] = useState({
-    understood: 0,
-    notUnderstood: 0,
-    total: 0
-  });
-  const [realTimeAvailable, setRealTimeAvailable] = useState(false);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [currentPollId, setCurrentPollId] = useState<string | null>(null);
+  const [pollResponses, setPollResponses] = useState<UnderstandingResponse[]>([]);
   const navigate = useNavigate();
 
   useEffect(() => {
     if (sessionId) {
       fetchSessionData(sessionId);
       
-      // Connect to the socket server
-      try {
-        socketClient.joinSession(sessionId, user.id, 'teacher');
-        setRealTimeAvailable(true);
-        
-        // Set up socket event listeners for real-time updates
-        const joinHandler = (data: { studentId: string, participantCount: number }) => {
-          toast.success('A new student has joined the session');
-          // Fetch the updated participants list
-          fetchParticipants(sessionId);
-        };
-        
-        const statsHandler = (stats: { 
-          checkId: string, 
-          understood: number, 
-          notUnderstood: number, 
-          total: number,
-          responded: number
-        }) => {
-          setCheckStats({
-            understood: stats.understood,
-            notUnderstood: stats.notUnderstood,
-            total: stats.total
+      // Connect to socket.io server
+      const socket = getSocket();
+      
+      // Join the session room
+      joinSession(sessionId, user.id, 'teacher');
+      
+      // Set up socket event listeners
+      socket.on('connect', () => {
+        setSocketConnected(true);
+        toast.success('Connected to real-time server');
+      });
+      
+      socket.on('disconnect', () => {
+        setSocketConnected(false);
+        toast.error('Disconnected from real-time server');
+      });
+      
+      socket.on('participant-joined', (data: ParticipantJoined) => {
+        if (data.role === 'student') {
+          // Add the new participant
+          const newParticipant: Participant = {
+            id: `participant-${Date.now()}`,
+            session_id: sessionId,
+            user_id: data.userId,
+            joined_at: data.timestamp
+          };
+          
+          setParticipants(prev => {
+            // Check if this participant is already in the list
+            if (prev.some(p => p.user_id === data.userId)) {
+              return prev;
+            }
+            return [...prev, newParticipant];
           });
           
-          // If all students have responded, show a notification
-          if (stats.responded >= stats.total && stats.total > 0) {
-            toast.success('All students have responded to the understanding check');
-          }
-        };
-        
-        socketClient.on('student:joined', joinHandler);
-        socketClient.on('understanding:stats', statsHandler);
-        
-        // Mock a student joining after 3 seconds if we're in development mode
-        const timer = setTimeout(() => {
-          if (participants.length === 0) {
-            const mockParticipant = {
-              id: `participant-${Date.now()}`,
-              session_id: sessionId,
-              user_id: 'student-456',
-              joined_at: new Date().toISOString()
-            };
-            setParticipants(prev => [...prev, mockParticipant]);
-            toast.success('A new student has joined the session');
-          }
-        }, 3000);
-        
-        return () => {
-          socketClient.off('student:joined', joinHandler);
-          socketClient.off('understanding:stats', statsHandler);
-          clearTimeout(timer);
-        };
-      } catch (error) {
-        console.error('Failed to initialize real-time connection:', error);
-        setRealTimeAvailable(false);
-      }
-    }
-  }, [sessionId, user.id]);
-
-  // For non-socket fallback, poll for understanding check responses every 3 seconds
-  useEffect(() => {
-    if (!realTimeAvailable && currentCheck && sessionId) {
-      const pollInterval = setInterval(() => {
-        updateUnderstandingStats(currentCheck.id);
-      }, 3000);
+          toast.success('A new student has joined the session');
+        }
+      });
       
-      return () => clearInterval(pollInterval);
+      socket.on('understanding-update', (data: { pollId: string, responses: UnderstandingResponse[] }) => {
+        if (data.pollId === currentPollId) {
+          setPollResponses(data.responses);
+        }
+      });
+      
+      // Cleanup function
+      return () => {
+        socket.off('connect');
+        socket.off('disconnect');
+        socket.off('participant-joined');
+        socket.off('understanding-update');
+      };
     }
-  }, [currentCheck, sessionId, realTimeAvailable]);
+  }, [sessionId, user.id, currentPollId]);
 
   const fetchSessionData = async (sid: string) => {
     try {
@@ -134,15 +120,9 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
         setLesson(mockLesson || null);
       }
       
-      // Get participants
-      fetchParticipants(sid);
-      
-      // Check if there's an active understanding check
-      const { data: latestCheck } = mockDatabase.getLatestUnderstandingCheck(sid);
-      if (latestCheck) {
-        setCurrentCheck(latestCheck);
-        updateUnderstandingStats(latestCheck.id);
-      }
+      // Get participants (will be empty initially)
+      const mockParticipants = mockDatabase.participants.filter(p => p.session_id === sid);
+      setParticipants(mockParticipants);
     } catch (error) {
       toast.error('Failed to load session data');
       console.error('Error fetching session data:', error);
@@ -151,76 +131,9 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
       setLoading(false);
     }
   };
-  
-  const fetchParticipants = async (sid: string) => {
-    try {
-      const mockParticipants = mockDatabase.participants.filter(p => p.session_id === sid);
-      setParticipants(mockParticipants);
-      
-      // Update the total in the checkStats
-      setCheckStats(prev => ({
-        ...prev,
-        total: mockParticipants.length
-      }));
-    } catch (error) {
-      console.error('Error fetching participants:', error);
-    }
-  };
 
-  const updateUnderstandingStats = (checkId: string) => {
-    if (!sessionId) return;
-    
-    try {
-      const { data: stats } = mockDatabase.getUnderstandingStats(checkId, sessionId);
-      setCheckStats({
-        understood: stats.understood,
-        notUnderstood: stats.notUnderstood,
-        total: stats.total
-      });
-      
-      // If all students have responded, stop polling
-      if (stats.respondedCount >= stats.total && stats.total > 0) {
-        toast.success('All students have responded to the understanding check');
-      }
-    } catch (error) {
-      console.error('Error updating understanding stats:', error);
-    }
-  };
-
-  const sendUnderstandingCheck = async () => {
-    if (!sessionId) return;
-    
-    setSendingCheck(true);
-    try {
-      // Create a new understanding check
-      const { data: newCheck } = mockDatabase.createUnderstandingCheck(sessionId);
-      if (newCheck) {
-        setCurrentCheck(newCheck);
-        
-        // If real-time is available, use socket.io
-        if (realTimeAvailable) {
-          socketClient.sendUnderstandingCheck(newCheck.id);
-        }
-        
-        toast.success('Understanding check sent to students');
-        
-        // Reset stats for the new check
-        setCheckStats({
-          understood: 0,
-          notUnderstood: 0,
-          total: participants.length
-        });
-      }
-    } catch (error) {
-      toast.error('Failed to send understanding check');
-      console.error('Error sending understanding check:', error);
-    } finally {
-      setSendingCheck(false);
-    }
-  };
-
-  const endSession = async () => {
-    if (!session) return;
+  const handleEndSession = async () => {
+    if (!session || !sessionId) return;
 
     try {
       const updatedSession = { ...session, active: false };
@@ -231,17 +144,30 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
         mockDatabase.sessions[sessionIndex] = updatedSession;
       }
       
+      // Notify all connected clients that the session has ended
+      endSession(sessionId);
+      
       setSession(updatedSession);
       toast.success('Session ended successfully');
-      
-      // Disconnect from the socket
-      socketClient.leaveSession();
-      
       navigate('/teacher');
     } catch (error) {
       toast.error('Failed to end session');
       console.error('Error ending session:', error);
     }
+  };
+
+  const handleStartUnderstandingCheck = () => {
+    if (!sessionId) return;
+    
+    // Start a new understanding check
+    startUnderstandingCheck(sessionId, user.id);
+    
+    // Set the current poll ID (in a real app, this would come from the server)
+    const newPollId = `poll-${Date.now()}`;
+    setCurrentPollId(newPollId);
+    setPollResponses([]);
+    
+    toast.success('Understanding check started');
   };
 
   if (loading) {
@@ -259,9 +185,7 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
     content: {
       introduction: '<p>This is a sample introduction for demonstration purposes.</p>',
       body: '<p>This is the main content of the sample lesson.</p><ul><li>Point 1</li><li>Point 2</li><li>Point 3</li></ul>',
-      conclusion: '<p>This concludes our sample lesson.</p>',
-      painPoints: '<p>Students may struggle with:</p><ul><li>Connecting the concepts to real-world applications</li><li>Understanding abstract terminology</li></ul>',
-      vocabularyNotes: '<p>Key vocabulary:</p><ul><li><strong>Term 1</strong> - Definition</li><li><strong>Term 2</strong> - Definition</li></ul>'
+      conclusion: '<p>This concludes our sample lesson.</p>'
     },
     teacher_id: user.id,
     created_at: new Date().toISOString()
@@ -290,32 +214,52 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
             </Button>
             <h1 className="text-2xl font-bold text-gray-900">{displayLesson.title}</h1>
           </div>
-          <Button variant="destructive" onClick={endSession}>
-            <X className="h-4 w-4 mr-2" />
-            End Session
-          </Button>
+          <div className="flex items-center space-x-2">
+            {socketConnected ? (
+              <div className="flex items-center text-green-600 mr-4">
+                <Wifi className="h-4 w-4 mr-1" />
+                <span className="text-sm">Connected</span>
+              </div>
+            ) : (
+              <div className="flex items-center text-amber-600 mr-4">
+                <WifiOff className="h-4 w-4 mr-1" />
+                <span className="text-sm">Offline</span>
+              </div>
+            )}
+            <Button variant="destructive" onClick={handleEndSession}>
+              <X className="h-4 w-4 mr-2" />
+              End Session
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
             <LessonOutline lesson={displayLesson} />
+            
+            <div className="mt-6">
+              <Button 
+                onClick={handleStartUnderstandingCheck}
+                className="bg-blue-600 hover:bg-blue-700"
+                disabled={!socketConnected}
+              >
+                <HelpCircle className="h-4 w-4 mr-2" />
+                Check Understanding
+              </Button>
+              
+              {currentPollId && (
+                <div className="mt-4">
+                  <UnderstandingResults 
+                    responses={pollResponses} 
+                    totalStudents={participants.length}
+                  />
+                </div>
+              )}
+            </div>
           </div>
           
           <div className="space-y-6">
             <ClassCodeDisplay classCode={displaySession.class_code} />
-            
-            {!realTimeAvailable && (
-              <div className="bg-amber-50 border border-amber-200 p-3 rounded-md text-amber-800 text-sm">
-                <p className="font-medium">Real-time functionality limited</p>
-                <p>Using fallback mode for understanding checks.</p>
-              </div>
-            )}
-            
-            <TeacherUnderstandingControl
-              onSendCheck={sendUnderstandingCheck}
-              responses={checkStats}
-              loading={sendingCheck}
-            />
             
             <Card>
               <CardHeader>

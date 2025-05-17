@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { StudentUnderstandingCheck } from '../components/UnderstandingCheck';
-import { mockDatabase, User, Lesson, Session, UnderstandingCheck } from '../lib/supabase';
-import { socketClient } from '../lib/socket';
-import { ArrowLeft, BookOpen } from 'lucide-react';
+import { LessonOutline } from '../components/LessonOutline';
+import { UnderstandingCheck } from '../components/UnderstandingCheck';
+import { mockDatabase, User, Lesson, Session } from '../lib/supabase';
+import { ArrowLeft, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { 
+  getSocket, 
+  joinSession, 
+  respondToUnderstandingCheck, 
+  pollForUnderstandingChecks,
+  UnderstandingPoll
+} from '../lib/socket';
 
 type StudentSessionProps = {
   user: User;
@@ -17,72 +23,98 @@ export default function StudentSession({ user }: StudentSessionProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeCheck, setActiveCheck] = useState<UnderstandingCheck | null>(null);
-  const [hasResponded, setHasResponded] = useState<boolean>(false);
-  const [realTimeAvailable, setRealTimeAvailable] = useState(false);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [currentPoll, setCurrentPoll] = useState<UnderstandingPoll | null>(null);
+  const [userResponse, setUserResponse] = useState<boolean | undefined>(undefined);
+  const [pollingInterval, setPollingInterval] = useState<number | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
     if (sessionId) {
       fetchSessionData(sessionId);
       
-      // Connect to the socket server for real-time updates
-      try {
-        socketClient.joinSession(sessionId, user.id, 'student');
-        setRealTimeAvailable(true);
+      // Connect to socket.io server
+      const socket = getSocket();
+      
+      // Join the session room
+      joinSession(sessionId, user.id, 'student');
+      
+      // Set up socket event listeners
+      socket.on('connect', () => {
+        setSocketConnected(true);
+        // Clear any polling interval if we're connected via WebSockets
+        if (pollingInterval) {
+          clearInterval(pollingInterval);
+          setPollingInterval(null);
+        }
+      });
+      
+      socket.on('disconnect', () => {
+        setSocketConnected(false);
+        // Start polling as a fallback when WebSockets are disconnected
+        startPolling();
+      });
+      
+      socket.on('new-understanding-check', (poll: UnderstandingPoll) => {
+        setCurrentPoll(poll);
+        setUserResponse(undefined);
+        toast.success('New understanding check from your teacher');
+      });
+      
+      socket.on('session-ended', () => {
+        toast.info('This session has ended');
+        if (session) {
+          setSession({ ...session, active: false });
+        }
+      });
+      
+      // Cleanup function
+      return () => {
+        socket.off('connect');
+        socket.off('disconnect');
+        socket.off('new-understanding-check');
+        socket.off('session-ended');
         
-        // Set up listener for understanding checks
-        const checkHandler = (check: UnderstandingCheck) => {
-          setActiveCheck(check);
-          setHasResponded(false);
-          toast.success('New understanding check from your teacher');
-        };
-        
-        socketClient.on('understanding:check', checkHandler);
-        
-        return () => {
-          socketClient.off('understanding:check', checkHandler);
-        };
-      } catch (error) {
-        console.error('Failed to initialize real-time connection:', error);
-        setRealTimeAvailable(false);
-      }
+        if (pollingInterval) {
+          clearInterval(pollingInterval);
+        }
+      };
     }
   }, [sessionId, user.id]);
 
-  // Fallback polling method if socket connection isn't available
-  useEffect(() => {
-    if (!realTimeAvailable && sessionId) {
-      const checkForNewUnderstandingPolls = setInterval(() => {
-        checkForNewUnderstandingChecks(sessionId);
-      }, 5000);
+  // Fallback polling mechanism when WebSockets aren't available
+  const startPolling = () => {
+    if (pollingInterval) return;
+    
+    const interval = setInterval(() => {
+      if (!sessionId || socketConnected) return;
       
-      return () => clearInterval(checkForNewUnderstandingPolls);
-    }
-  }, [sessionId, activeCheck, realTimeAvailable]);
+      checkForNewUnderstandingPolls();
+    }, 5000) as unknown as number;
+    
+    setPollingInterval(interval);
+  };
 
-  const checkForNewUnderstandingChecks = async (sid: string) => {
+  const checkForNewUnderstandingPolls = async () => {
+    if (!sessionId) return;
+    
     try {
-      const { data: latestCheck } = mockDatabase.getLatestUnderstandingCheck(sid);
-      
-      // If there's a new check and we haven't already shown it, display it
-      if (latestCheck && (!activeCheck || latestCheck.id !== activeCheck.id)) {
-        setActiveCheck(latestCheck);
-        setHasResponded(false);
+      const polls = await pollForUnderstandingChecks(sessionId);
+      if (polls.length > 0) {
+        // Find the most recent poll
+        const latestPoll = polls.sort((a, b) => 
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        )[0];
         
-        // Check if the user has already responded
-        const { data: responses } = mockDatabase.getUnderstandingResponses(latestCheck.id);
-        const userParticipant = mockDatabase.participants.find(
-          p => p.session_id === sid && p.user_id === user.id
-        );
-        
-        if (userParticipant) {
-          const hasUserResponded = responses.some(r => r.participant_id === userParticipant.id);
-          setHasResponded(hasUserResponded);
+        // Only update if this is a new poll
+        if (!currentPoll || latestPoll.pollId !== currentPoll.pollId) {
+          setCurrentPoll(latestPoll);
+          setUserResponse(undefined);
+          toast.success('New understanding check from your teacher');
         }
       }
     } catch (error) {
-      console.error('Error checking for understanding checks:', error);
+      console.error('Error checking for understanding polls:', error);
     }
   };
 
@@ -105,19 +137,7 @@ export default function StudentSession({ user }: StudentSessionProps) {
         
         mockDatabase.sessions.push(newSession);
         setSession(newSession);
-        
-        // For student view, we'll hide the teacher-specific insights
-        const studentViewLesson = {
-          ...mockLesson,
-          content: {
-            introduction: mockLesson.content.introduction,
-            body: mockLesson.content.body,
-            conclusion: mockLesson.content.conclusion,
-            // Pain points and vocabulary notes are intentionally not included in student view
-          }
-        };
-        
-        setLesson(studentViewLesson);
+        setLesson(mockLesson);
         
         // Add the student as a participant
         mockDatabase.participants.push({
@@ -131,23 +151,7 @@ export default function StudentSession({ user }: StudentSessionProps) {
         
         // Find the associated lesson
         const mockLesson = mockDatabase.lessons.find(l => l.id === mockSession.lesson_id);
-        
-        if (mockLesson) {
-          // Create a student view version (without teacher insights)
-          const studentViewLesson = {
-            ...mockLesson,
-            content: {
-              introduction: mockLesson.content.introduction,
-              body: mockLesson.content.body,
-              conclusion: mockLesson.content.conclusion,
-              // Pain points and vocabulary notes are intentionally not included in student view
-            }
-          };
-          
-          setLesson(studentViewLesson);
-        } else {
-          setLesson(mockDatabase.lessons[0]);
-        }
+        setLesson(mockLesson || mockDatabase.lessons[0]);
         
         // Ensure the student is a participant
         const isParticipant = mockDatabase.participants.some(
@@ -163,9 +167,6 @@ export default function StudentSession({ user }: StudentSessionProps) {
           });
         }
       }
-      
-      // Check for any active understanding checks
-      checkForNewUnderstandingChecks(sid);
     } catch (error) {
       toast.error('Failed to load session data');
       console.error('Error fetching session data:', error);
@@ -175,34 +176,16 @@ export default function StudentSession({ user }: StudentSessionProps) {
     }
   };
 
-  const handleUnderstandingResponse = async (checkId: string, response: 'understood' | 'not-understood' | null) => {
-    if (!response || !sessionId) return;
+  const handleUnderstandingResponse = (understood: boolean) => {
+    if (!currentPoll) return;
     
-    try {
-      // Find the user's participant record
-      const userParticipant = mockDatabase.participants.find(
-        p => p.session_id === sessionId && p.user_id === user.id
-      );
-      
-      if (!userParticipant) {
-        toast.error('You are not registered as a participant in this session');
-        return;
-      }
-      
-      // If real-time is available, use socket.io
-      if (realTimeAvailable) {
-        socketClient.sendUnderstandingResponse(checkId, response);
-      } else {
-        // Otherwise use mock database
-        mockDatabase.respondToUnderstandingCheck(checkId, userParticipant.id, response);
-      }
-      
-      setHasResponded(true);
-      toast.success('Response submitted');
-    } catch (error) {
-      toast.error('Failed to submit response');
-      console.error('Error submitting understanding response:', error);
-    }
+    // Send response to the server
+    respondToUnderstandingCheck(currentPoll.pollId, user.id, understood);
+    
+    // Update local state
+    setUserResponse(understood);
+    
+    toast.success('Response submitted');
   };
 
   if (loading) {
@@ -237,74 +220,48 @@ export default function StudentSession({ user }: StudentSessionProps) {
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-8">
       <div className="max-w-4xl mx-auto">
-        <div className="flex items-center mb-6">
-          <Button 
-            variant="ghost" 
-            onClick={() => navigate('/student')}
-            className="mr-4"
-          >
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{displayLesson.title}</h1>
-            {!displaySession.active && (
-              <p className="text-sm text-amber-600">This session has ended</p>
-            )}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center">
+            <Button 
+              variant="ghost" 
+              onClick={() => navigate('/student')}
+              className="mr-4"
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">{displayLesson.title}</h1>
+              {!displaySession.active && (
+                <p className="text-sm text-amber-600">This session has ended</p>
+              )}
+            </div>
           </div>
+          
+          {socketConnected ? (
+            <div className="flex items-center text-green-600">
+              <Wifi className="h-4 w-4 mr-1" />
+              <span className="text-sm">Connected</span>
+            </div>
+          ) : (
+            <div className="flex items-center text-amber-600">
+              <WifiOff className="h-4 w-4 mr-1" />
+              <span className="text-sm">Offline</span>
+            </div>
+          )}
         </div>
-        
-        {!realTimeAvailable && (
-          <div className="bg-amber-50 border border-amber-200 p-3 rounded-md text-amber-800 text-sm mb-4">
-            <p className="font-medium">Real-time functionality limited</p>
-            <p>Using fallback mode for understanding checks.</p>
+
+        {currentPoll && (
+          <div className="mb-6">
+            <UnderstandingCheck 
+              poll={currentPoll}
+              onRespond={handleUnderstandingResponse}
+              userResponse={userResponse}
+            />
           </div>
-        )}
-        
-        {activeCheck && (
-          <StudentUnderstandingCheck
-            checkId={activeCheck.id}
-            question={activeCheck.question}
-            onRespond={handleUnderstandingResponse}
-            disabled={hasResponded || !displaySession.active}
-          />
         )}
 
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="flex items-center">
-              <BookOpen className="h-5 w-5 mr-2" />
-              Lesson Overview
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-700">{displayLesson.content.introduction.replace(/<\/?[^>]+(>|$)/g, "")}</p>
-          </CardContent>
-        </Card>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Main Content</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="prose max-w-none">
-                <div dangerouslySetInnerHTML={{ __html: displayLesson.content.body }} />
-              </div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardHeader>
-              <CardTitle>Conclusion</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="prose max-w-none">
-                <div dangerouslySetInnerHTML={{ __html: displayLesson.content.conclusion }} />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <LessonOutline lesson={displayLesson} />
       </div>
     </div>
   );
