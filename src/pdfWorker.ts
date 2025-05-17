@@ -1,1 +1,1 @@
-export { default as default } from 'pdfjs-dist/build/pdf.worker.min.js';
+export default null;
