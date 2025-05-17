@@ -7,12 +7,12 @@ import { mockDatabase, User, Lesson, Session } from '../lib/supabase';
 import { ArrowLeft, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { 
-  getSocket, 
   joinSession, 
   respondToUnderstandingCheck, 
   pollForUnderstandingChecks,
   UnderstandingPoll
 } from '../lib/socket';
+import { supabase } from '../lib/supabase';
 
 type StudentSessionProps = {
   user: User;
@@ -23,7 +23,7 @@ export default function StudentSession({ user }: StudentSessionProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [loading, setLoading] = useState(true);
-  const [socketConnected, setSocketConnected] = useState(false);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [currentPoll, setCurrentPoll] = useState<UnderstandingPoll | null>(null);
   const [userResponse, setUserResponse] = useState<boolean | undefined>(undefined);
   const [pollingInterval, setPollingInterval] = useState<number | null>(null);
@@ -33,48 +33,51 @@ export default function StudentSession({ user }: StudentSessionProps) {
     if (sessionId) {
       fetchSessionData(sessionId);
       
-      // Connect to socket.io server
-      const socket = getSocket();
+      // Subscribe to Supabase Realtime channel
+      const channel = joinSession(sessionId, user.id, 'student');
       
-      // Join the session room
-      joinSession(sessionId, user.id, 'student');
-      
-      // Set up socket event listeners
-      socket.on('connect', () => {
-        setSocketConnected(true);
-        // Clear any polling interval if we're connected via WebSockets
-        if (pollingInterval) {
-          clearInterval(pollingInterval);
-          setPollingInterval(null);
+      // Test if Supabase realtime is working
+      const testConnection = async () => {
+        try {
+          // Check if Supabase realtime is connected
+          const { error } = await supabase.from('sessions').select('id').limit(1);
+          if (!error) {
+            setRealtimeConnected(true);
+            // Clear any polling interval if we're connected via Realtime
+            if (pollingInterval) {
+              clearInterval(pollingInterval);
+              setPollingInterval(null);
+            }
+          }
+        } catch (error) {
+          console.error('Supabase connection error:', error);
+          setRealtimeConnected(false);
+          // Start polling as a fallback when Realtime is disconnected
+          startPolling();
         }
-      });
+      };
       
-      socket.on('disconnect', () => {
-        setSocketConnected(false);
-        // Start polling as a fallback when WebSockets are disconnected
-        startPolling();
-      });
+      testConnection();
       
-      socket.on('new-understanding-check', (poll: UnderstandingPoll) => {
-        setCurrentPoll(poll);
-        setUserResponse(undefined);
-        toast.success('New understanding check from your teacher');
-      });
-      
-      socket.on('session-ended', () => {
-        toast.info('This session has ended');
-        if (session) {
-          setSession({ ...session, active: false });
-        }
-      });
+      // Listen for understanding check events
+      const understandingListener = supabase
+        .channel(`session-${sessionId}`)
+        .on('broadcast', { event: 'new-understanding-check' }, (payload) => {
+          const poll = payload.payload as UnderstandingPoll;
+          setCurrentPoll(poll);
+          setUserResponse(undefined);
+          toast.success('New understanding check from your teacher');
+        })
+        .on('broadcast', { event: 'session-ended' }, () => {
+          toast.info('This session has ended');
+          if (session) {
+            setSession({ ...session, active: false });
+          }
+        });
       
       // Cleanup function
       return () => {
-        socket.off('connect');
-        socket.off('disconnect');
-        socket.off('new-understanding-check');
-        socket.off('session-ended');
-        
+        understandingListener.unsubscribe();
         if (pollingInterval) {
           clearInterval(pollingInterval);
         }
@@ -82,12 +85,12 @@ export default function StudentSession({ user }: StudentSessionProps) {
     }
   }, [sessionId, user.id]);
 
-  // Fallback polling mechanism when WebSockets aren't available
+  // Fallback polling mechanism when Realtime isn't available
   const startPolling = () => {
     if (pollingInterval) return;
     
     const interval = setInterval(() => {
-      if (!sessionId || socketConnected) return;
+      if (!sessionId || realtimeConnected) return;
       
       checkForNewUnderstandingPolls();
     }, 5000) as unknown as number;
@@ -177,7 +180,7 @@ export default function StudentSession({ user }: StudentSessionProps) {
   };
 
   const handleUnderstandingResponse = (understood: boolean) => {
-    if (!currentPoll) return;
+    if (!currentPoll || !sessionId) return;
     
     // Send response to the server
     respondToUnderstandingCheck(currentPoll.pollId, user.id, understood);
@@ -203,7 +206,9 @@ export default function StudentSession({ user }: StudentSessionProps) {
     content: {
       introduction: '<p>This is a sample introduction for demonstration purposes.</p>',
       body: '<p>This is the main content of the sample lesson.</p><ul><li>Point 1</li><li>Point 2</li><li>Point 3</li></ul>',
-      conclusion: '<p>This concludes our sample lesson.</p>'
+      conclusion: '<p>This concludes our sample lesson.</p>',
+      painPoints: '<p>Students might struggle with understanding these concepts.</p>',
+      vocabularyNotes: '<p>Key terms that students should understand.</p>'
     },
     teacher_id: 'teacher-123',
     created_at: new Date().toISOString()
@@ -238,7 +243,7 @@ export default function StudentSession({ user }: StudentSessionProps) {
             </div>
           </div>
           
-          {socketConnected ? (
+          {realtimeConnected ? (
             <div className="flex items-center text-green-600">
               <Wifi className="h-4 w-4 mr-1" />
               <span className="text-sm">Connected</span>

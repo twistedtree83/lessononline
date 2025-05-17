@@ -9,13 +9,13 @@ import { mockDatabase, User, Lesson, Session, Participant } from '../lib/supabas
 import { ArrowLeft, Users, X, HelpCircle, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { 
-  getSocket, 
   joinSession, 
   startUnderstandingCheck, 
   endSession, 
   UnderstandingResponse,
   ParticipantJoined
 } from '../lib/socket';
+import { supabase } from '../lib/supabase';
 
 type TeacherSessionProps = {
   user: User;
@@ -27,7 +27,7 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
-  const [socketConnected, setSocketConnected] = useState(false);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [currentPollId, setCurrentPollId] = useState<string | null>(null);
   const [pollResponses, setPollResponses] = useState<UnderstandingResponse[]>([]);
   const navigate = useNavigate();
@@ -36,57 +36,63 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
     if (sessionId) {
       fetchSessionData(sessionId);
       
-      // Connect to socket.io server
-      const socket = getSocket();
+      // Subscribe to Supabase Realtime channel
+      const channel = joinSession(sessionId, user.id, 'teacher');
       
-      // Join the session room
-      joinSession(sessionId, user.id, 'teacher');
-      
-      // Set up socket event listeners
-      socket.on('connect', () => {
-        setSocketConnected(true);
-        toast.success('Connected to real-time server');
-      });
-      
-      socket.on('disconnect', () => {
-        setSocketConnected(false);
-        toast.error('Disconnected from real-time server');
-      });
-      
-      socket.on('participant-joined', (data: ParticipantJoined) => {
-        if (data.role === 'student') {
-          // Add the new participant
-          const newParticipant: Participant = {
-            id: `participant-${Date.now()}`,
-            session_id: sessionId,
-            user_id: data.userId,
-            joined_at: data.timestamp
-          };
-          
-          setParticipants(prev => {
-            // Check if this participant is already in the list
-            if (prev.some(p => p.user_id === data.userId)) {
-              return prev;
-            }
-            return [...prev, newParticipant];
-          });
-          
-          toast.success('A new student has joined the session');
+      // Test if Supabase realtime is working
+      const testConnection = async () => {
+        try {
+          // Check if Supabase realtime is connected
+          const { error } = await supabase.from('sessions').select('id').limit(1);
+          if (!error) {
+            setRealtimeConnected(true);
+          }
+        } catch (error) {
+          console.error('Supabase connection error:', error);
+          setRealtimeConnected(false);
         }
-      });
+      };
       
-      socket.on('understanding-update', (data: { pollId: string, responses: UnderstandingResponse[] }) => {
-        if (data.pollId === currentPollId) {
-          setPollResponses(data.responses);
-        }
-      });
+      testConnection();
+      
+      // Listen for participant joined events
+      const participantListener = supabase
+        .channel(`session-${sessionId}`)
+        .on('broadcast', { event: 'participant-joined' }, (payload) => {
+          const data = payload.payload as ParticipantJoined;
+          if (data.role === 'student') {
+            // Add the new participant
+            const newParticipant: Participant = {
+              id: `participant-${Date.now()}`,
+              session_id: sessionId,
+              user_id: data.userId,
+              joined_at: data.timestamp
+            };
+            
+            setParticipants(prev => {
+              // Check if this participant is already in the list
+              if (prev.some(p => p.user_id === data.userId)) {
+                return prev;
+              }
+              return [...prev, newParticipant];
+            });
+            
+            toast.success('A new student has joined the session');
+          }
+        })
+        .on('broadcast', { event: 'understanding-update' }, (payload) => {
+          const data = payload.payload;
+          if (data.pollId === currentPollId) {
+            setPollResponses(prev => [...prev, data.response]);
+          }
+        });
       
       // Cleanup function
       return () => {
-        socket.off('connect');
-        socket.off('disconnect');
-        socket.off('participant-joined');
-        socket.off('understanding-update');
+        participantListener.unsubscribe();
+        if (sessionId) {
+          endSession(sessionId);
+        }
       };
     }
   }, [sessionId, user.id, currentPollId]);
@@ -160,11 +166,10 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
     if (!sessionId) return;
     
     // Start a new understanding check
-    startUnderstandingCheck(sessionId, user.id);
+    const pollId = startUnderstandingCheck(sessionId, user.id);
     
-    // Set the current poll ID (in a real app, this would come from the server)
-    const newPollId = `poll-${Date.now()}`;
-    setCurrentPollId(newPollId);
+    // Set the current poll ID
+    setCurrentPollId(pollId);
     setPollResponses([]);
     
     toast.success('Understanding check started');
@@ -185,7 +190,9 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
     content: {
       introduction: '<p>This is a sample introduction for demonstration purposes.</p>',
       body: '<p>This is the main content of the sample lesson.</p><ul><li>Point 1</li><li>Point 2</li><li>Point 3</li></ul>',
-      conclusion: '<p>This concludes our sample lesson.</p>'
+      conclusion: '<p>This concludes our sample lesson.</p>',
+      painPoints: '<p>Students might struggle with understanding these concepts.</p>',
+      vocabularyNotes: '<p>Key terms that students should understand.</p>'
     },
     teacher_id: user.id,
     created_at: new Date().toISOString()
@@ -215,7 +222,7 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
             <h1 className="text-2xl font-bold text-gray-900">{displayLesson.title}</h1>
           </div>
           <div className="flex items-center space-x-2">
-            {socketConnected ? (
+            {realtimeConnected ? (
               <div className="flex items-center text-green-600 mr-4">
                 <Wifi className="h-4 w-4 mr-1" />
                 <span className="text-sm">Connected</span>
@@ -241,7 +248,7 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
               <Button 
                 onClick={handleStartUnderstandingCheck}
                 className="bg-blue-600 hover:bg-blue-700"
-                disabled={!socketConnected}
+                disabled={!realtimeConnected}
               >
                 <HelpCircle className="h-4 w-4 mr-2" />
                 Check Understanding
