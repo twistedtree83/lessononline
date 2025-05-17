@@ -69,9 +69,13 @@ export default function CreateLesson({ user }: CreateLessonProps) {
     setLoading(true);
     
     try {
-      // In real app use Supabase, but for demo use mock database
-      const { data, error } = import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
-        ? await supabase
+      let savedLesson;
+      const hasSupabaseConfig = import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY;
+      
+      if (hasSupabaseConfig) {
+        try {
+          // Try to save using Supabase
+          const { data, error } = await supabase
             .from('lessons')
             .insert([
               { 
@@ -81,14 +85,28 @@ export default function CreateLesson({ user }: CreateLessonProps) {
               }
             ])
             .select()
-            .single()
-        : mockDatabase.createLesson({
+            .single();
+          
+          if (error) throw error;
+          savedLesson = data;
+        } catch (supabaseError) {
+          console.error('Supabase save error:', supabaseError);
+          // Fall back to mock database if Supabase fails
+          console.log('Falling back to mock database');
+          savedLesson = mockDatabase.createLesson({
             title,
             content: lessonContent,
             teacher_id: user.id
           });
-        
-      if (error) throw error;
+        }
+      } else {
+        // Use mock database if no Supabase config
+        savedLesson = mockDatabase.createLesson({
+          title,
+          content: lessonContent,
+          teacher_id: user.id
+        });
+      }
       
       toast.success('Lesson saved successfully!');
       navigate('/teacher');
