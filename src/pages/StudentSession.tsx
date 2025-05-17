@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Button } from '../components/ui/button';
-import { LessonOutline } from '../components/LessonOutline';
-import { mockDatabase, User, Lesson, Session } from '../lib/supabase';
-import { ArrowLeft } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { StudentUnderstandingCheck } from '../components/UnderstandingCheck';
+import { mockDatabase, User, Lesson, Session, UnderstandingCheck } from '../lib/supabase';
+import { ArrowLeft, BookOpen } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 type StudentSessionProps = {
@@ -15,6 +16,8 @@ export default function StudentSession({ user }: StudentSessionProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activeCheck, setActiveCheck] = useState<UnderstandingCheck | null>(null);
+  const [hasResponded, setHasResponded] = useState<boolean>(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -22,6 +25,17 @@ export default function StudentSession({ user }: StudentSessionProps) {
       fetchSessionData(sessionId);
     }
   }, [sessionId]);
+
+  // Poll for new understanding checks every 5 seconds
+  useEffect(() => {
+    if (!sessionId) return;
+    
+    const checkForUnderstandingPolls = setInterval(() => {
+      checkForNewUnderstandingChecks(sessionId);
+    }, 5000);
+    
+    return () => clearInterval(checkForNewUnderstandingPolls);
+  }, [sessionId, activeCheck]);
 
   const fetchSessionData = async (sid: string) => {
     try {
@@ -100,12 +114,64 @@ export default function StudentSession({ user }: StudentSessionProps) {
           });
         }
       }
+      
+      // Check for any active understanding checks
+      checkForNewUnderstandingChecks(sid);
     } catch (error) {
       toast.error('Failed to load session data');
       console.error('Error fetching session data:', error);
       navigate('/student');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const checkForNewUnderstandingChecks = async (sid: string) => {
+    try {
+      const { data: latestCheck } = mockDatabase.getLatestUnderstandingCheck(sid);
+      
+      // If there's a new check and we haven't already shown it, display it
+      if (latestCheck && (!activeCheck || latestCheck.id !== activeCheck.id)) {
+        setActiveCheck(latestCheck);
+        setHasResponded(false);
+        
+        // Check if the user has already responded
+        const { data: responses } = mockDatabase.getUnderstandingResponses(latestCheck.id);
+        const userParticipant = mockDatabase.participants.find(
+          p => p.session_id === sid && p.user_id === user.id
+        );
+        
+        if (userParticipant) {
+          const hasUserResponded = responses.some(r => r.participant_id === userParticipant.id);
+          setHasResponded(hasUserResponded);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking for understanding checks:', error);
+    }
+  };
+
+  const handleUnderstandingResponse = async (checkId: string, response: 'understood' | 'not-understood' | null) => {
+    if (!response || !sessionId) return;
+    
+    try {
+      // Find the user's participant record
+      const userParticipant = mockDatabase.participants.find(
+        p => p.session_id === sessionId && p.user_id === user.id
+      );
+      
+      if (!userParticipant) {
+        toast.error('You are not registered as a participant in this session');
+        return;
+      }
+      
+      // Submit the response
+      mockDatabase.respondToUnderstandingCheck(checkId, userParticipant.id, response);
+      setHasResponded(true);
+      toast.success('Response submitted');
+    } catch (error) {
+      toast.error('Failed to submit response');
+      console.error('Error submitting understanding response:', error);
     }
   };
 
@@ -157,8 +223,27 @@ export default function StudentSession({ user }: StudentSessionProps) {
             )}
           </div>
         </div>
+        
+        {activeCheck && (
+          <StudentUnderstandingCheck
+            checkId={activeCheck.id}
+            question={activeCheck.question}
+            onRespond={handleUnderstandingResponse}
+            disabled={hasResponded || !displaySession.active}
+          />
+        )}
 
-        <LessonOutline lesson={displayLesson} />
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <BookOpen className="h-5 w-5 mr-2" />
+              Lesson Overview
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-gray-700">{displayLesson.content.introduction.replace(/<\/?[^>]+(>|$)/g, "")}</p>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

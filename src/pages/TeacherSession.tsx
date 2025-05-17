@@ -4,7 +4,8 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { ClassCodeDisplay } from '../components/ClassCodeDisplay';
 import { LessonOutline } from '../components/LessonOutline';
-import { mockDatabase, User, Lesson, Session, Participant } from '../lib/supabase';
+import { TeacherUnderstandingControl } from '../components/UnderstandingCheck';
+import { mockDatabase, User, Lesson, Session, Participant, UnderstandingCheck } from '../lib/supabase';
 import { ArrowLeft, Users, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -18,6 +19,13 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sendingCheck, setSendingCheck] = useState(false);
+  const [currentCheck, setCurrentCheck] = useState<UnderstandingCheck | null>(null);
+  const [checkStats, setCheckStats] = useState({
+    understood: 0,
+    notUnderstood: 0,
+    total: 0
+  });
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -38,6 +46,17 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
       }, 3000);
     }
   }, [sessionId]);
+
+  // Poll for understanding check responses every 3 seconds
+  useEffect(() => {
+    if (!currentCheck) return;
+    
+    const pollInterval = setInterval(() => {
+      updateUnderstandingStats(currentCheck.id);
+    }, 3000);
+    
+    return () => clearInterval(pollInterval);
+  }, [currentCheck]);
 
   const fetchSessionData = async (sid: string) => {
     try {
@@ -71,12 +90,65 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
       // Get participants (will be empty initially)
       const mockParticipants = mockDatabase.participants.filter(p => p.session_id === sid);
       setParticipants(mockParticipants);
+      
+      // Check if there's an active understanding check
+      const { data: latestCheck } = mockDatabase.getLatestUnderstandingCheck(sid);
+      if (latestCheck) {
+        setCurrentCheck(latestCheck);
+        updateUnderstandingStats(latestCheck.id);
+      }
     } catch (error) {
       toast.error('Failed to load session data');
       console.error('Error fetching session data:', error);
       navigate('/teacher');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const updateUnderstandingStats = (checkId: string) => {
+    if (!sessionId) return;
+    
+    try {
+      const { data: stats } = mockDatabase.getUnderstandingStats(checkId, sessionId);
+      setCheckStats({
+        understood: stats.understood,
+        notUnderstood: stats.notUnderstood,
+        total: stats.total
+      });
+      
+      // If all students have responded, stop polling
+      if (stats.respondedCount >= stats.total && stats.total > 0) {
+        toast.success('All students have responded to the understanding check');
+      }
+    } catch (error) {
+      console.error('Error updating understanding stats:', error);
+    }
+  };
+
+  const sendUnderstandingCheck = async () => {
+    if (!sessionId) return;
+    
+    setSendingCheck(true);
+    try {
+      // Create a new understanding check
+      const { data: newCheck } = mockDatabase.createUnderstandingCheck(sessionId);
+      if (newCheck) {
+        setCurrentCheck(newCheck);
+        toast.success('Understanding check sent to students');
+        
+        // Reset stats for the new check
+        setCheckStats({
+          understood: 0,
+          notUnderstood: 0,
+          total: participants.length
+        });
+      }
+    } catch (error) {
+      toast.error('Failed to send understanding check');
+      console.error('Error sending understanding check:', error);
+    } finally {
+      setSendingCheck(false);
     }
   };
 
@@ -160,6 +232,12 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
           
           <div className="space-y-6">
             <ClassCodeDisplay classCode={displaySession.class_code} />
+            
+            <TeacherUnderstandingControl
+              onSendCheck={sendUnderstandingCheck}
+              responses={checkStats}
+              loading={sendingCheck}
+            />
             
             <Card>
               <CardHeader>

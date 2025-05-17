@@ -77,6 +77,21 @@ export type Participant = {
   joined_at: string;
 };
 
+export type UnderstandingCheck = {
+  id: string;
+  session_id: string;
+  timestamp: string;
+  question: string;
+};
+
+export type UnderstandingResponse = {
+  id: string;
+  check_id: string;
+  participant_id: string;
+  response: 'understood' | 'not-understood';
+  timestamp: string;
+};
+
 // Mock database service for development without authentication
 export const mockDatabase = {
   lessons: [
@@ -131,6 +146,8 @@ export const mockDatabase = {
   ],
   sessions: [],
   participants: [],
+  understandingChecks: [],
+  understandingResponses: [],
   
   // CRUD operations
   createLesson(lesson) {
@@ -185,5 +202,59 @@ export const mockDatabase = {
   getParticipants(sessionId) {
     const participants = this.participants.filter(p => p.session_id === sessionId);
     return { data: participants, error: null };
+  },
+  
+  createUnderstandingCheck(sessionId, question = "Do you understand?") {
+    const newCheck = {
+      id: `check-${Date.now()}`,
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      question
+    };
+    this.understandingChecks.push(newCheck);
+    return { data: newCheck, error: null };
+  },
+  
+  getLatestUnderstandingCheck(sessionId) {
+    const checks = this.understandingChecks
+      .filter(check => check.session_id === sessionId)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    
+    return { data: checks[0] || null, error: null };
+  },
+  
+  respondToUnderstandingCheck(checkId, participantId, response) {
+    const newResponse = {
+      id: `response-${Date.now()}`,
+      check_id: checkId,
+      participant_id: participantId,
+      response,
+      timestamp: new Date().toISOString()
+    };
+    this.understandingResponses.push(newResponse);
+    return { data: newResponse, error: null };
+  },
+  
+  getUnderstandingResponses(checkId) {
+    const responses = this.understandingResponses.filter(r => r.check_id === checkId);
+    return { data: responses, error: null };
+  },
+  
+  getUnderstandingStats(checkId, sessionId) {
+    const responses = this.understandingResponses.filter(r => r.check_id === checkId);
+    const participants = this.participants.filter(p => p.session_id === sessionId);
+    
+    const understood = responses.filter(r => r.response === 'understood').length;
+    const notUnderstood = responses.filter(r => r.response === 'not-understood').length;
+    
+    return { 
+      data: {
+        understood,
+        notUnderstood,
+        total: participants.length,
+        respondedCount: responses.length
+      }, 
+      error: null 
+    };
   }
 };
