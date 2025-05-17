@@ -4,7 +4,7 @@
 import * as pdfjs from 'pdfjs-dist';
 import * as mammoth from 'mammoth';
 
-// No need to set workerSrc, as we're now using workerPort via the shim
+// No need to set workerSrc here as it's now handled in setupPdfWorker.ts
 
 /**
  * Extract text from a PDF file

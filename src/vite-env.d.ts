@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-declare module 'pdfjs-dist/build/pdf.worker.min.js?worker' {
-  const WorkerFactory: new () => Worker;
-  export default WorkerFactory;
+declare module 'pdfjs-dist/build/pdf.worker.min.js?url' {
+  const workerUrl: string;
+  export default workerUrl;
 }
