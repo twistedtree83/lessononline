@@ -26,11 +26,36 @@ export default function StudentSession({ user }: StudentSessionProps) {
     }
   }, [sessionId]);
 
+  const checkForNewUnderstandingChecks = async (sid: string) => {
+    try {
+      const { data: latestCheck } = mockDatabase.getLatestUnderstandingCheck(sid);
+      
+      // If there's a new check and we haven't already shown it, display it
+      if (latestCheck && (!activeCheck || latestCheck.id !== activeCheck.id)) {
+        setActiveCheck(latestCheck);
+        setHasResponded(false);
+        
+        // Check if the user has already responded
+        const { data: responses } = mockDatabase.getUnderstandingResponses(latestCheck.id);
+        const userParticipant = mockDatabase.participants.find(
+          p => p.session_id === sid && p.user_id === user.id
+        );
+        
+        if (userParticipant) {
+          const hasUserResponded = responses.some(r => r.participant_id === userParticipant.id);
+          setHasResponded(hasUserResponded);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking for understanding checks:', error);
+    }
+  };
+
   // Poll for new understanding checks every 5 seconds
   useEffect(() => {
     if (!sessionId) return;
     
-    const checkForUnderstandingPolls = setInterval(() => {
+    const checkForNewUnderstandingPolls = setInterval(() => {
       checkForNewUnderstandingChecks(sessionId);
     }, 5000);
     
@@ -123,31 +148,6 @@ export default function StudentSession({ user }: StudentSessionProps) {
       navigate('/student');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const checkForNewUnderstandingChecks = async (sid: string) => {
-    try {
-      const { data: latestCheck } = mockDatabase.getLatestUnderstandingCheck(sid);
-      
-      // If there's a new check and we haven't already shown it, display it
-      if (latestCheck && (!activeCheck || latestCheck.id !== activeCheck.id)) {
-        setActiveCheck(latestCheck);
-        setHasResponded(false);
-        
-        // Check if the user has already responded
-        const { data: responses } = mockDatabase.getUnderstandingResponses(latestCheck.id);
-        const userParticipant = mockDatabase.participants.find(
-          p => p.session_id === sid && p.user_id === user.id
-        );
-        
-        if (userParticipant) {
-          const hasUserResponded = responses.some(r => r.participant_id === userParticipant.id);
-          setHasResponded(hasUserResponded);
-        }
-      }
-    } catch (error) {
-      console.error('Error checking for understanding checks:', error);
     }
   };
 
