@@ -29,6 +29,8 @@ interface LessonContent {
   introduction: string;
   body: string;
   conclusion: string;
+  painPoints: string;
+  vocabularyNotes: string;
 }
 
 Deno.serve(async (req: Request) => {
@@ -80,10 +82,15 @@ Deno.serve(async (req: Request) => {
         },
         { 
           role: "user", 
-          content: `Extract and organize this lesson plan into three sections:
+          content: `Extract and organize this lesson plan into five sections:
             1. Introduction
             2. Body (main content)
             3. Conclusion
+            4. Pain Points: Identify potential challenges or difficulties students might face in understanding this content. 
+               Include complex concepts, confusing explanations, or areas requiring prerequisite knowledge.
+               Also analyze potential misconceptions students might develop.
+            5. Vocabulary Notes: List key vocabulary terms or jargon in the lesson that students might find difficult,
+               with brief explanations that a teacher could use to help students understand.
             
             Here is the content:
             ${text.slice(0, 15000)}`

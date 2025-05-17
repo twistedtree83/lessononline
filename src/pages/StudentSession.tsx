@@ -42,7 +42,19 @@ export default function StudentSession({ user }: StudentSessionProps) {
         
         mockDatabase.sessions.push(newSession);
         setSession(newSession);
-        setLesson(mockLesson);
+        
+        // For student view, we'll hide the teacher-specific insights
+        const studentViewLesson = {
+          ...mockLesson,
+          content: {
+            introduction: mockLesson.content.introduction,
+            body: mockLesson.content.body,
+            conclusion: mockLesson.content.conclusion,
+            // Pain points and vocabulary notes are intentionally not included in student view
+          }
+        };
+        
+        setLesson(studentViewLesson);
         
         // Add the student as a participant
         mockDatabase.participants.push({
@@ -56,7 +68,23 @@ export default function StudentSession({ user }: StudentSessionProps) {
         
         // Find the associated lesson
         const mockLesson = mockDatabase.lessons.find(l => l.id === mockSession.lesson_id);
-        setLesson(mockLesson || mockDatabase.lessons[0]);
+        
+        if (mockLesson) {
+          // Create a student view version (without teacher insights)
+          const studentViewLesson = {
+            ...mockLesson,
+            content: {
+              introduction: mockLesson.content.introduction,
+              body: mockLesson.content.body,
+              conclusion: mockLesson.content.conclusion,
+              // Pain points and vocabulary notes are intentionally not included in student view
+            }
+          };
+          
+          setLesson(studentViewLesson);
+        } else {
+          setLesson(mockDatabase.lessons[0]);
+        }
         
         // Ensure the student is a participant
         const isParticipant = mockDatabase.participants.some(

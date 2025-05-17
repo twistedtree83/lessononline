@@ -116,7 +116,9 @@ export default function TeacherSession({ user }: TeacherSessionProps) {
     content: {
       introduction: '<p>This is a sample introduction for demonstration purposes.</p>',
       body: '<p>This is the main content of the sample lesson.</p><ul><li>Point 1</li><li>Point 2</li><li>Point 3</li></ul>',
-      conclusion: '<p>This concludes our sample lesson.</p>'
+      conclusion: '<p>This concludes our sample lesson.</p>',
+      painPoints: '<p>Students may struggle with:</p><ul><li>Connecting the concepts to real-world applications</li><li>Understanding abstract terminology</li></ul>',
+      vocabularyNotes: '<p>Key vocabulary:</p><ul><li><strong>Term 1</strong> - Definition</li><li><strong>Term 2</strong> - Definition</li></ul>'
     },
     teacher_id: user.id,
     created_at: new Date().toISOString()

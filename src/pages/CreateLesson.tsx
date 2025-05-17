@@ -22,7 +22,9 @@ export default function CreateLesson({ user }: CreateLessonProps) {
   const [lessonContent, setLessonContent] = useState({
     introduction: '',
     body: '',
-    conclusion: ''
+    conclusion: '',
+    painPoints: '',
+    vocabularyNotes: ''
   });
   const [apiKeyMissing, setApiKeyMissing] = useState(!import.meta.env.VITE_OPENAI_API_KEY);
   const navigate = useNavigate();
@@ -93,19 +95,21 @@ export default function CreateLesson({ user }: CreateLessonProps) {
           console.error('Supabase save error:', supabaseError);
           // Fall back to mock database if Supabase fails
           console.log('Falling back to mock database');
-          savedLesson = mockDatabase.createLesson({
+          const result = mockDatabase.createLesson({
             title,
             content: lessonContent,
             teacher_id: user.id
           });
+          savedLesson = result.data;
         }
       } else {
         // Use mock database if no Supabase config
-        savedLesson = mockDatabase.createLesson({
+        const result = mockDatabase.createLesson({
           title,
           content: lessonContent,
           teacher_id: user.id
         });
+        savedLesson = result.data;
       }
       
       toast.success('Lesson saved successfully!');
@@ -204,6 +208,26 @@ export default function CreateLesson({ user }: CreateLessonProps) {
                     <h3 className="text-lg font-medium text-gray-900 mb-2">Conclusion</h3>
                     <div className="prose max-w-none" dangerouslySetInnerHTML={{ __html: lessonContent.conclusion }} />
                   </div>
+
+                  {lessonContent.painPoints && (
+                    <div>
+                      <h3 className="text-lg font-medium text-amber-800 mb-2 flex items-center">
+                        <AlertTriangle className="h-4 w-4 mr-2 text-amber-600" />
+                        Potential Pain Points
+                      </h3>
+                      <div className="prose max-w-none bg-amber-50/50 p-4 rounded-md" dangerouslySetInnerHTML={{ __html: lessonContent.painPoints }} />
+                    </div>
+                  )}
+                  
+                  {lessonContent.vocabularyNotes && (
+                    <div>
+                      <h3 className="text-lg font-medium text-blue-800 mb-2 flex items-center">
+                        <FileText className="h-4 w-4 mr-2 text-blue-600" />
+                        Vocabulary Notes
+                      </h3>
+                      <div className="prose max-w-none bg-blue-50/50 p-4 rounded-md" dangerouslySetInnerHTML={{ __html: lessonContent.vocabularyNotes }} />
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>

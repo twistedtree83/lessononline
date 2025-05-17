@@ -7,6 +7,8 @@ interface LessonContent {
   introduction: string;
   body: string;
   conclusion: string;
+  painPoints?: string;
+  vocabularyNotes?: string;
 }
 
 // Check if OpenAI API key is available
@@ -41,8 +43,17 @@ export async function aiAnalyzeLesson(text: string): Promise<LessonContent> {
       2. Body: The main content of the lesson with key points, examples, and activities.
       3. Conclusion: The summary and closing thoughts.
       
+      Additionally, provide the following analyses to help teachers:
+      
+      4. Pain Points: Identify potential challenges or difficulties students might face in understanding this lesson content. 
+         Include complex concepts, confusing explanations, or areas requiring prerequisite knowledge.
+         Also analyze potential misconceptions students might develop.
+      
+      5. Vocabulary Notes: List key vocabulary terms or jargon in the lesson that students might find difficult, 
+         with brief explanations that a teacher could use to help students understand.
+      
       Format each section as proper HTML (use p, ul, li, h3 tags as appropriate).
-      Return ONLY a JSON object with these three keys: introduction, body, conclusion.
+      Return ONLY a JSON object with these keys: introduction, body, conclusion, painPoints, vocabularyNotes.
       
       Here is the lesson content:
       ${text.slice(0, 15000)} // Limiting to avoid token limits
@@ -70,7 +81,9 @@ export async function aiAnalyzeLesson(text: string): Promise<LessonContent> {
     return {
       introduction: result.introduction || '<p>Introduction not identified in the document.</p>',
       body: result.body || '<p>Main content not identified in the document.</p>',
-      conclusion: result.conclusion || '<p>Conclusion not identified in the document.</p>'
+      conclusion: result.conclusion || '<p>Conclusion not identified in the document.</p>',
+      painPoints: result.painPoints || '<p>No specific pain points identified for this lesson.</p>',
+      vocabularyNotes: result.vocabularyNotes || '<p>No challenging vocabulary terms identified for this lesson.</p>'
     };
   } catch (error) {
     console.error('Error analyzing lesson with OpenAI:', error);
@@ -95,6 +108,9 @@ function fallbackAnalysis(text: string): LessonContent {
   const bodyParagraphs = paragraphs.slice(introductionEndIndex, conclusionStartIndex);
   const conclusionParagraphs = paragraphs.slice(conclusionStartIndex);
   
+  // Extract potential technical terms for vocabulary notes (simple approach for fallback)
+  const potentialTerms = extractPotentialVocabularyTerms(text);
+  
   // Convert to HTML
   const wrapInHtml = (paragraphs: string[]): string => {
     return paragraphs.map(p => {
@@ -113,9 +129,69 @@ function fallbackAnalysis(text: string): LessonContent {
     bodyHtml = `<ul>\n${bodyHtml}\n</ul>`;
   }
   
+  // Basic pain points suggestion based on text length and complexity
+  const painPointsHtml = `
+    <p>Without AI analysis, only basic content structure is available. Consider reviewing:</p>
+    <ul>
+      <li>Complex terminology that may need additional explanation</li>
+      <li>Concepts that build on prior knowledge</li>
+      <li>Areas where visual aids might enhance understanding</li>
+      <li>Points where students might make common misconceptions</li>
+    </ul>
+  `;
+  
+  // Basic vocabulary notes
+  const vocabularyHtml = potentialTerms.length > 0 
+    ? `
+      <p>Some potential technical terms identified in the document:</p>
+      <ul>
+        ${potentialTerms.map(term => `<li><strong>${term}</strong></li>`).join('\n')}
+      </ul>
+      <p>Consider providing definitions for these terms if they're important for student understanding.</p>
+    `
+    : `<p>No specific technical terms could be identified without AI analysis.</p>`;
+  
   return {
     introduction: wrapInHtml(introductionParagraphs),
     body: bodyHtml,
-    conclusion: wrapInHtml(conclusionParagraphs)
+    conclusion: wrapInHtml(conclusionParagraphs),
+    painPoints: painPointsHtml,
+    vocabularyNotes: vocabularyHtml
   };
+}
+
+/**
+ * Extract potential vocabulary terms from text using simple heuristics
+ * This is a basic approach for the fallback mode
+ */
+function extractPotentialVocabularyTerms(text: string): string[] {
+  // Look for capitalized words or phrases that might be technical terms
+  const words = text.split(/\s+/);
+  const potentialTerms = new Set<string>();
+  
+  // Simple patterns that might indicate technical terms:
+  // 1. Words that are capitalized but not at the beginning of sentences
+  // 2. Words with mixed case (e.g., JavaScript, ReactJS)
+  // 3. Words with numbers and letters (e.g., HTML5)
+  
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i].replace(/[.,;:!?()[\]{}""'']/g, '');
+    
+    // Skip short words, common words, and empty strings
+    if (word.length < 4 || ['the', 'and', 'that', 'this', 'with'].includes(word.toLowerCase()) || !word) {
+      continue;
+    }
+    
+    // Check if word is capitalized but not at sentence beginning
+    if (/^[A-Z][a-z]{3,}$/.test(word) && !words[i-1].match(/[.!?]$/)) {
+      potentialTerms.add(word);
+    }
+    
+    // Check for mixed case or alphanumeric technical terms
+    if ((/[a-z][A-Z]/.test(word) || /[a-zA-Z][0-9]|[0-9][a-zA-Z]/.test(word)) && word.length > 2) {
+      potentialTerms.add(word);
+    }
+  }
+  
+  return Array.from(potentialTerms).slice(0, 10); // Limit to top 10 terms
 }
